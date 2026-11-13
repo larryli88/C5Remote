@@ -13,6 +13,7 @@ struct C5RemoteApp: App {
 
 private struct RemoteView: View {
     @StateObject private var tv = TVRemote()
+    @Environment(\.scenePhase) private var scenePhase
     @FocusState private var editingAddress: Bool
     private let tapFeedback = UIImpactFeedbackGenerator(style: .light)
     private let swipeFeedback = UISelectionFeedbackGenerator()
@@ -43,7 +44,7 @@ private struct RemoteView: View {
                             roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
                         }
                         volumeControl
-                            .contextMenu { Button("断开连接") { tv.disconnect() } }
+                            .contextMenu { Button("断开连接") { disconnectManually() } }
 
                         if let error = tv.commandError {
                             Text(error)
@@ -63,6 +64,13 @@ private struct RemoteView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .background(Color.black.ignoresSafeArea())
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .background, tv.state != .disconnected {
+                tv.disconnect()
+            } else if phase == .active, !editingAddress {
+                tv.reconnectIfPaired()
+            }
+        }
         .sheet(isPresented: $tv.showingInputs) {
             NavigationStack {
                 List {
@@ -120,7 +128,7 @@ private struct RemoteView: View {
                     .disabled(tv.state == .connecting)
                     .onSubmit(connect)
                 Button(tv.state == .connecting ? "取消" : "连接") {
-                    if tv.state == .connecting { tv.disconnect() }
+                    if tv.state == .connecting { disconnectManually() }
                     else { connect() }
                 }
                 .buttonStyle(.plain)
@@ -214,6 +222,10 @@ private struct RemoteView: View {
     private func connect() {
         editingAddress = false
         tv.connect()
+    }
+
+    private func disconnectManually() {
+        tv.disconnectManually()
     }
 }
 

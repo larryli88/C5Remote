@@ -75,7 +75,28 @@ final class TVRemote: ObservableObject {
     private var inputRequest: String?
     private var inputTimeout: Task<Void, Never>?
 
+    private var reconnectPaused = false
+
+    func disconnectManually() {
+        reconnectPaused = true
+        disconnect()
+    }
+
+    func reconnectIfPaired() {
+        let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reconnectPaused, state == .disconnected,
+              UserDefaults.standard.string(forKey: "lastTV") == host,
+              savedPairing(for: host) != nil else { return }
+        connect()
+    }
+
+    private func savedPairing(for host: String) -> Pairing? {
+        UserDefaults.standard.data(forKey: "tvPairing." + host)
+            .flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
+    }
+
     func connect() {
+        reconnectPaused = false
         disconnect()
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let ip = IPv4Address(host) else {
@@ -92,8 +113,7 @@ final class TVRemote: ObservableObject {
         address = host
         UserDefaults.standard.set(host, forKey: "lastTV")
         let storageKey = "tvPairing." + host
-        let saved = UserDefaults.standard.data(forKey: storageKey)
-            .flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
+        let saved = savedPairing(for: host)
         let trust = TVTrust(host: host, pin: saved?.fingerprint)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 65
