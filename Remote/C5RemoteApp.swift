@@ -113,8 +113,8 @@ private struct RemoteView: View {
             NavigationStack {
                 Form {
                     LabeledContent("亮度模式", value: brightnessModeLabel)
-                    if let current = tv.brightness {
-                        Section {
+                    Section {
+                        if let current = tv.brightness {
                             Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
                                 .accessibilityLabel("OLED 像素亮度")
                             Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
@@ -123,8 +123,10 @@ private struct RemoteView: View {
                                 .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                           || (Int(tv.brightnessDraft) == current && tv.energySavingMode != "auto"))
                         }
-                        .disabled(tv.adjustingBrightness)
+                        Button("开启自动亮度") { tv.enableAutoBrightness() }
+                            .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                    .disabled(tv.adjustingBrightness)
                     Section {
                         HStack {
                             Group {
@@ -152,8 +154,6 @@ private struct RemoteView: View {
                         Text("手动和自动亮度共用这个密钥。")
                     }
                     .disabled(tv.adjustingBrightness)
-                    Button("开启自动亮度") { tv.enableAutoBrightness() }
-                        .disabled(tv.adjustingBrightness || tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let notice = tv.autoBrightnessNotice {
                         Text(notice).foregroundStyle(.secondary)
                     }
