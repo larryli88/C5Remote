@@ -54,8 +54,11 @@ private struct RemoteView: View {
                             Spacer()
                             roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
                         }
-                        volumeControl
-                            .contextMenu { Button("断开连接") { disconnectManually() } }
+                        HStack(spacing: 16) {
+                            volumeControl
+                                .contextMenu { Button("断开连接") { disconnectManually() } }
+                            roundKey("sun.max", label: "OLED 像素亮度", size: 54) { tv.openBrightness() }
+                        }
 
                         if let error = tv.commandError {
                             Text(error)
@@ -107,6 +110,42 @@ private struct RemoteView: View {
                 }
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $tv.showingBrightness) {
+            NavigationStack {
+                Form {
+                    if let current = tv.brightness {
+                        Section {
+                            Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
+                                .accessibilityLabel("OLED 像素亮度")
+                            Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
+                                .monospacedDigit()
+                            Button("应用") { tv.applyBrightness() }
+                                .disabled(Int(tv.brightnessDraft) == current)
+                        }
+                        .disabled(tv.adjustingBrightness)
+                    }
+                    if tv.adjustingBrightness {
+                        ProgressView("等待电视回应…")
+                    }
+                    if let error = tv.brightnessError {
+                        Text(error).foregroundStyle(.secondary)
+                    }
+                    Section {
+                        Button("打开电视设置") {
+                            tv.openTVSettings()
+                        }
+                    } footer: {
+                        Text("在电视设置里选「画面 → 高级设置 → 亮度 → OLED 像素亮度」。")
+                    }
+                }
+                .navigationTitle("OLED 像素亮度")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("关闭") { tv.showingBrightness = false }
+                    }
+                }
+            }
         }
         .sheet(isPresented: $tv.showingInputs) {
             NavigationStack {

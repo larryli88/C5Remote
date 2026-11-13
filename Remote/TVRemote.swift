@@ -58,6 +58,12 @@ final class TVRemote: ObservableObject {
         let fingerprint: String
     }
 
+    @Published var showingBrightness = false
+    @Published var brightnessDraft = 0.0
+    @Published private(set) var brightness: Int?
+    @Published private(set) var brightnessError: String?
+    @Published private(set) var adjustingBrightness = false
+
     @Published var showingInputs = false
     @Published private(set) var inputs: [Input] = []
     @Published private(set) var loadingInputs = false
@@ -72,6 +78,9 @@ final class TVRemote: ObservableObject {
     private var pointer: URLSessionWebSocketTask?
     private var timeout: Task<Void, Never>?
     private var powerRequest: String?
+    private var brightnessRequest: String?
+    private var brightnessTimeout: Task<Void, Never>?
+
     private var inputRequest: String?
     private var inputTimeout: Task<Void, Never>?
 
@@ -144,7 +153,8 @@ final class TVRemote: ObservableObject {
                         "appVersion": "1.0",
                         "permissions": [
                             "CONTROL_AUDIO", "CONTROL_INPUT_TV", "CONTROL_MOUSE_AND_KEYBOARD",
-                            "CONTROL_POWER", "CONTROL_INPUT_JOYSTICK", "LAUNCH", "READ_INPUT_DEVICE_LIST"
+                            "CONTROL_POWER", "CONTROL_INPUT_JOYSTICK", "LAUNCH", "READ_INPUT_DEVICE_LIST",
+                            "READ_SETTINGS", "WRITE_SETTINGS"
                         ]
                     ]
                 ]
@@ -162,8 +172,24 @@ final class TVRemote: ObservableObject {
                     guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
                     let body = response["payload"] as? [String: Any]
                     let id = response["id"] as? String
-                    if response["type"] as? String == "error" || body?["returnValue"] as? Bool == false {
-                        let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
+                    let failed = response["type"] as? String == "error" || body?["returnValue"] as? Bool == false
+                    let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
+                    if let id, self.brightnessRequest == id {
+                        if failed {
+                            self.finishBrightnessRequest(error: reason)
+                        } else if let settings = body?["settings"] as? [String: Any],
+                                  let value = settings["backlight"] as? Int, (0...100).contains(value) {
+                            self.brightness = value
+                            self.brightnessDraft = Double(value)
+                            self.finishBrightnessRequest()
+                        } else if self.brightness != nil {
+                            self.readBrightness()
+                        } else {
+                            self.finishBrightnessRequest(error: "电视没有返回 OLED 像素亮度")
+                        }
+                        continue
+                    }
+                    if failed {
                         if self.state == .connecting {
                             self.disconnect("配对失败 · " + reason)
                             return
@@ -243,6 +269,9 @@ final class TVRemote: ObservableObject {
         control = nil
         session = nil
         powerRequest = nil
+        finishBrightnessRequest()
+        showingBrightness = false
+        brightness = nil
         finishInputRequest()
         showingInputs = false
         inputs = []
@@ -304,6 +333,54 @@ final class TVRemote: ObservableObject {
         inputTimeout = nil
         inputRequest = nil
         loadingInputs = false
+    }
+
+    func openTVSettings() {
+        showingBrightness = false
+        request("system.launcher/launch", payload: ["id": "com.webos.app.settings"])
+    }
+
+    func openBrightness() {
+        guard state == .ready, brightnessRequest == nil else { return }
+        showingBrightness = true
+        readBrightness()
+    }
+
+    func applyBrightness() {
+        guard state == .ready, let brightness, brightnessRequest == nil else { return }
+        let value = Int(brightnessDraft.rounded())
+        guard (0...100).contains(value), value != brightness else { return }
+        sendBrightnessRequest("settings/setSystemSettings",
+                              payload: ["category": "picture", "settings": ["backlight": value]])
+    }
+
+    private func readBrightness() {
+        brightness = nil
+        sendBrightnessRequest("settings/getSystemSettings",
+                              payload: ["category": "picture", "keys": ["backlight"]])
+    }
+
+    private func sendBrightnessRequest(_ path: String, payload: [String: Any]) {
+        brightnessTimeout?.cancel()
+        brightnessError = nil
+        adjustingBrightness = true
+        let id = UUID().uuidString
+        brightnessRequest = id
+        request(path, payload: payload, id: id)
+        brightnessTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled, let self, self.brightnessRequest == id else { return }
+            self.brightness = nil
+            self.finishBrightnessRequest(error: "电视没有回应，请重新打开亮度面板查看当前值。")
+        }
+    }
+
+    private func finishBrightnessRequest(error: String? = nil) {
+        brightnessTimeout?.cancel()
+        brightnessTimeout = nil
+        brightnessRequest = nil
+        brightnessError = error
+        adjustingBrightness = false
     }
 
     private func request(_ path: String, payload: [String: Any] = [:],
