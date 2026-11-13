@@ -51,13 +51,13 @@ private struct RemoteView: View {
                         trackpad.frame(height: max(185, geometry.size.height - 288))
                         HStack {
                             roundKey("gearshape", label: "设置", size: 78, iconSize: 28) { tv.openBrightness() }
+                                .contextMenu { Button("断开连接") { disconnectManually() } }
                             Spacer(minLength: 0)
                             roundKey("chevron.left", label: "返回", size: 100, iconSize: 36) { tv.press("BACK") }
                             Spacer(minLength: 0)
                             roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
                         }
                         volumeControl
-                            .contextMenu { Button("断开连接") { disconnectManually() } }
 
                         if let error = tv.commandError {
                             Text(error)
@@ -306,10 +306,14 @@ private struct RemoteView: View {
 
     private var volumeControl: some View {
         HStack(spacing: 0) {
-            key("speaker.minus", label: "降低音量") { tv.volume(false) }
+            volumeKey("speaker.minus", label: "降低音量", up: false)
                 .frame(width: 72, height: 54)
             ZStack {
-                if tv.showsCurrentVolume, let volume = tv.currentVolume {
+                if tv.isMuted == true {
+                    Image(systemName: "speaker.slash.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("电视已静音")
+                } else if tv.showsCurrentVolume, let volume = tv.currentVolume {
                     Text(String(volume))
                         .font(.subheadline.monospacedDigit())
                         .accessibilityLabel("当前音量 \(volume)")
@@ -321,10 +325,33 @@ private struct RemoteView: View {
                 }
             }
             .frame(width: 45)
-            key("speaker.plus", label: "提高音量") { tv.volume(true) }
+            volumeKey("speaker.plus", label: "提高音量", up: true)
                 .frame(width: 72, height: 54)
         }
         .remoteGlass(in: Capsule())
+    }
+
+    private func volumeKey(_ symbol: String, label: String, up: Bool) -> some View {
+        let tap = {
+            tapFeedback.impactOccurred()
+            tv.volume(up)
+        }
+        let mute = {
+            tapFeedback.impactOccurred()
+            tv.toggleMute()
+        }
+        return Image(systemName: symbol)
+            .font(.system(size: 22, weight: .medium))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                LongPressGesture().onEnded { _ in mute() }
+                    .exclusively(before: TapGesture().onEnded { tap() })
+            )
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { tap() }
+            .accessibilityAction(named: "切换静音") { mute() }
     }
 
     private func roundKey(

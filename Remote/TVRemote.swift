@@ -77,6 +77,7 @@ final class TVRemote: ObservableObject {
     @Published var address = UserDefaults.standard.string(forKey: "lastTV") ?? ""
     @Published private(set) var state = State.disconnected
     @Published private(set) var status = "输入电视的 IP 地址"
+    @Published private(set) var isMuted: Bool?
     @Published private(set) var currentVolume: Int?
     @Published private(set) var showsCurrentVolume = false
     private var volumeDisplayTimeout: Task<Void, Never>?
@@ -193,10 +194,28 @@ final class TVRemote: ObservableObject {
                     let id = response["id"] as? String
                     let failed = response["type"] as? String == "error" || body?["returnValue"] as? Bool == false
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
+                    if id == "mute-read" || id == "mute-toggle-read" || id == "mute-write" {
+                        if failed {
+                            if id != "mute-read" { self.commandError = reason }
+                        } else if id == "mute-write" {
+                            self.request("audio/getStatus", id: "mute-read")
+                        } else {
+                            self.updateMute(from: body)
+                            if id == "mute-toggle-read" {
+                                if let muted = self.isMuted {
+                                    self.request("audio/setMute", payload: ["mute": !muted], id: "mute-write")
+                                } else {
+                                    self.commandError = "电视没有返回静音状态"
+                                }
+                            }
+                        }
+                        continue
+                    }
                     if id == "volume-subscription" || id == "volume-reading" || id == "volume-adjustment-reading" {
                         if id == "volume-subscription" {
                             self.receivingVolumeUpdates = !failed && self.updateVolume(from: body)
                             if failed { self.request("audio/getVolume", id: "volume-reading") }
+                            if self.isMuted == nil { self.request("audio/getStatus", id: "mute-read") }
                         } else if !failed, !self.receivingVolumeUpdates {
                             if self.updateVolume(from: body), id == "volume-adjustment-reading" {
                                 self.showVolumeBriefly()
@@ -205,6 +224,7 @@ final class TVRemote: ObservableObject {
                         continue
                     }
                     if let id, id.hasPrefix("volume-change-"), !failed {
+                        self.request("audio/getStatus", id: "mute-read")
                         if self.receivingVolumeUpdates, self.currentVolume != nil {
                             self.showVolumeBriefly()
                         } else {
@@ -339,6 +359,7 @@ final class TVRemote: ObservableObject {
         volumeDisplayTimeout = nil
         showsCurrentVolume = false
         currentVolume = nil
+        isMuted = nil
         receivingVolumeUpdates = false
         state = .disconnected
         status = message
@@ -377,7 +398,19 @@ final class TVRemote: ObservableObject {
         }
     }
 
+    func toggleMute() {
+        request("audio/getStatus", id: "mute-toggle-read")
+    }
+
+    private func updateMute(from payload: [String: Any]?) {
+        let status = payload?["volumeStatus"] as? [String: Any]
+        if let mute = (status?["muteStatus"] ?? status?["mute"] ?? payload?["mute"] ?? payload?["muted"]) as? Bool {
+            isMuted = mute
+        }
+    }
+
     private func updateVolume(from payload: [String: Any]?) -> Bool {
+        updateMute(from: payload)
         let status = payload?["volumeStatus"] as? [String: Any]
         guard let raw = status?["volume"] ?? payload?["volume"],
               let value = Int(String(describing: raw)), (0...100).contains(value) else { return false }
