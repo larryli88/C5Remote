@@ -78,7 +78,7 @@ final class TVRemote: ObservableObject {
     private var pointer: URLSessionWebSocketTask?
     private var timeout: Task<Void, Never>?
     private var powerRequest: String?
-    private var brightnessRequest: String?
+    private var brightnessRequest: (id: String, isWrite: Bool)?
     private var brightnessTimeout: Task<Void, Never>?
 
     private var inputRequest: String?
@@ -174,18 +174,24 @@ final class TVRemote: ObservableObject {
                     let id = response["id"] as? String
                     let failed = response["type"] as? String == "error" || body?["returnValue"] as? Bool == false
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
-                    if let id, self.brightnessRequest == id {
+                    if let pending = self.brightnessRequest, pending.id == id {
                         if failed {
                             self.finishBrightnessRequest(error: reason)
+                        } else if pending.isWrite {
+                            self.readBrightness()
                         } else if let settings = body?["settings"] as? [String: Any],
-                                  let value = settings["backlight"] as? Int, (0...100).contains(value) {
+                                  let raw = settings["backlight"],
+                                  let value = Int(String(describing: raw).trimmingCharacters(in: .whitespacesAndNewlines)),
+                                  (0...100).contains(value) {
                             self.brightness = value
                             self.brightnessDraft = Double(value)
                             self.finishBrightnessRequest()
-                        } else if self.brightness != nil {
-                            self.readBrightness()
                         } else {
-                            self.finishBrightnessRequest(error: "电视没有返回 OLED 像素亮度")
+                            let settings = body?["settings"] as? [String: Any]
+                            let message = settings?["backlight"] == nil
+                                ? "电视的回复缺少 OLED 像素亮度（backlight）。请在电视设置中调整。"
+                                : "电视返回的 OLED 像素亮度格式无效。请在电视设置中调整。"
+                            self.finishBrightnessRequest(error: message)
                         }
                         continue
                     }
@@ -351,7 +357,8 @@ final class TVRemote: ObservableObject {
         let value = Int(brightnessDraft.rounded())
         guard (0...100).contains(value), value != brightness else { return }
         sendBrightnessRequest("settings/setSystemSettings",
-                              payload: ["category": "picture", "settings": ["backlight": value]])
+                              payload: ["category": "picture", "settings": ["backlight": value]],
+                              isWrite: true)
     }
 
     private func readBrightness() {
@@ -360,16 +367,16 @@ final class TVRemote: ObservableObject {
                               payload: ["category": "picture", "keys": ["backlight"]])
     }
 
-    private func sendBrightnessRequest(_ path: String, payload: [String: Any]) {
+    private func sendBrightnessRequest(_ path: String, payload: [String: Any], isWrite: Bool = false) {
         brightnessTimeout?.cancel()
         brightnessError = nil
         adjustingBrightness = true
         let id = UUID().uuidString
-        brightnessRequest = id
+        brightnessRequest = (id, isWrite)
         request(path, payload: payload, id: id)
         brightnessTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
-            guard !Task.isCancelled, let self, self.brightnessRequest == id else { return }
+            guard !Task.isCancelled, let self, self.brightnessRequest?.id == id else { return }
             self.brightness = nil
             self.finishBrightnessRequest(error: "电视没有回应，请重新打开亮度面板查看当前值。")
         }
