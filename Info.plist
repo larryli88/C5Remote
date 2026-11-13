@@ -25,6 +25,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSHomeKitUsageDescription</key>
+	<string>Turn on your paired television using Apple Home.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your LG TV on your home network.</string>
 	<key>UILaunchScreen</key>

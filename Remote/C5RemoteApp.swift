@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import HomeKit
 
 @main
 struct C5RemoteApp: App {
@@ -13,6 +14,7 @@ struct C5RemoteApp: App {
 
 private struct RemoteView: View {
     @StateObject private var tv = TVRemote()
+    @StateObject private var homePower = HomePower()
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var editingAddress: Bool
     private let tapFeedback = UIImpactFeedbackGenerator(style: .light)
@@ -29,10 +31,19 @@ private struct RemoteView: View {
                         }
                         .disabled(tv.state != .ready)
                         Spacer()
-                        roundKey("power", label: "关闭电视", size: 48) {
-                            tv.confirmPowerOff = true
+                        roundKey("power", label: tv.state == .ready ? "关闭电视" : "通过 HomeKit 开机", size: 48) {
+                            if tv.state == .ready { tv.confirmPowerOff = true }
+                            else {
+                                editingAddress = false
+                                homePower.powerOn(remote: tv)
+                            }
                         }
-                        .disabled(tv.state != .ready)
+                        .contextMenu {
+                            if tv.state != .ready {
+                                Button("重新选择家庭电视") { homePower.chooseAnotherTV(remote: tv) }
+                            }
+                        }
+                        .disabled(homePower.waking || (tv.state != .ready && !homePower.isSupported))
                     }
                     .overlay { connectionStatus }
 
@@ -65,11 +76,37 @@ private struct RemoteView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .background, tv.state != .disconnected {
-                tv.disconnect()
-            } else if phase == .active, !editingAddress {
+            if phase == .background {
+                homePower.cancel()
+                if tv.state != .disconnected { tv.disconnect() }
+            } else if phase == .active, !editingAddress, !homePower.waking, !homePower.showingPicker {
                 tv.reconnectIfPaired()
             }
+        }
+        .sheet(isPresented: $homePower.showingPicker, onDismiss: homePower.clearPendingSelection) {
+            NavigationStack {
+                List {
+                    if !homePower.loaded {
+                        ProgressView("正在读取 Apple 家庭…")
+                    } else if homePower.targets.isEmpty {
+                        Text("请先在 Apple「家庭」添加电视，并允许 C5 Remote 访问家庭。")
+                    } else {
+                        ForEach(homePower.targets) { target in
+                            Button(target.name) {
+                                tapFeedback.impactOccurred()
+                                homePower.wake(target, remote: tv)
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("通过家庭开机")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("关闭") { homePower.showingPicker = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $tv.showingInputs) {
             NavigationStack {
@@ -115,7 +152,7 @@ private struct RemoteView: View {
 
     private var connectionCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(tv.status)
+            Text(homePower.message ?? tv.status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
@@ -125,18 +162,19 @@ private struct RemoteView: View {
                     .textContentType(.none)
                     .autocorrectionDisabled()
                     .focused($editingAddress)
-                    .disabled(tv.state == .connecting)
+                    .disabled(tv.state == .connecting || homePower.waking)
                     .onSubmit(connect)
                 Button(tv.state == .connecting ? "取消" : "连接") {
                     if tv.state == .connecting { disconnectManually() }
                     else { connect() }
                 }
                 .buttonStyle(.plain)
+                .disabled(homePower.waking)
                 .padding(.horizontal, 16)
                 .frame(minHeight: 44)
                 .remoteGlass(in: Capsule())
             }
-            if tv.state == .disconnected {
+            if tv.state == .disconnected, !homePower.waking {
                 HStack {
                     Text("在电视的网络设置里查看 IP")
                     Spacer()
@@ -221,6 +259,7 @@ private struct RemoteView: View {
 
     private func connect() {
         editingAddress = false
+        homePower.message = nil
         tv.connect()
     }
 
@@ -238,5 +277,125 @@ private extension View {
             background(.ultraThinMaterial, in: shape)
                 .overlay(shape.strokeBorder(.white.opacity(0.2), lineWidth: 1).allowsHitTesting(false))
         }
+    }
+}
+
+
+@MainActor
+private final class HomePower: NSObject, ObservableObject, HMHomeManagerDelegate {
+    struct Target: Identifiable {
+        let id: UUID
+        let name: String
+        let power: HMCharacteristic
+    }
+
+    @Published var showingPicker = false
+    @Published var message: String?
+    @Published private(set) var waking = false
+    @Published private(set) var loaded = false
+    @Published private(set) var targets: [Target] = []
+
+    private var manager: HMHomeManager?
+    private var pendingRemote: TVRemote?
+    private var wakeTask: Task<Void, Never>?
+
+    var isSupported: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
+    func chooseAnotherTV(remote: TVRemote) {
+        UserDefaults.standard.removeObject(forKey: "homePowerTarget")
+        powerOn(remote: remote)
+    }
+
+    func powerOn(remote: TVRemote) {
+        message = nil
+        if let saved = UserDefaults.standard.string(forKey: "homePowerTarget"),
+           let target = targets.first(where: { $0.id.uuidString == saved }) {
+            wake(target, remote: remote)
+            return
+        }
+        if !loaded { pendingRemote = remote }
+        if manager == nil {
+            let manager = HMHomeManager()
+            self.manager = manager
+            manager.delegate = self
+        }
+        showingPicker = true
+    }
+
+    nonisolated func homeManagerDidUpdateHomes(_ manager: HMHomeManager) {
+        Task { @MainActor in self.updateTargets(from: manager) }
+    }
+
+    private func updateTargets(from manager: HMHomeManager) {
+        loaded = true
+        guard #available(iOS 18.0, *) else { return }
+        targets = manager.homes.flatMap { home in
+            home.accessories.flatMap { accessory in
+                accessory.services.compactMap { service in
+                    guard service.serviceType == HMServiceTypeTelevision,
+                          let power = service.characteristics.first(where: {
+                              $0.characteristicType == HMCharacteristicTypeActive
+                                  && $0.properties.contains(HMCharacteristicPropertyWritable)
+                          }) else { return nil }
+                    return Target(id: service.uniqueIdentifier, name: "\(accessory.name) · \(home.name)", power: power)
+                }
+            }
+        }
+        let remote = pendingRemote
+        pendingRemote = nil
+        if showingPicker, let remote,
+           let saved = UserDefaults.standard.string(forKey: "homePowerTarget"),
+           let target = targets.first(where: { $0.id.uuidString == saved }) {
+            wake(target, remote: remote)
+        }
+    }
+
+    func clearPendingSelection() {
+        pendingRemote = nil
+    }
+
+    func wake(_ target: Target, remote: TVRemote) {
+        guard !waking else { return }
+        UserDefaults.standard.set(target.id.uuidString, forKey: "homePowerTarget")
+        showingPicker = false
+        waking = true
+        message = "正在通过 Apple 家庭开机…"
+        wakeTask = Task {
+            defer {
+                if !Task.isCancelled { waking = false }
+            }
+            do {
+                try await target.power.writeValue(NSNumber(value: HMCharacteristicValueActivationState.active.rawValue))
+                try Task.checkCancellation()
+                guard remote.hasSavedPairing else {
+                    message = "已发送开机指令。电视开启后，请输入 IP 并连接。"
+                    return
+                }
+                message = "等待电视启动并连接…"
+                for _ in 0..<5 {
+                    try Task.checkCancellation()
+                    if remote.state == .disconnected { remote.connect(timeoutSeconds: 4) }
+                    try await Task.sleep(for: .seconds(5))
+                    if remote.state == .ready {
+                        message = nil
+                        return
+                    }
+                }
+                message = "已发送开机指令，暂未连上电视。电视开启后可点「连接」。"
+            } catch {
+                if !Task.isCancelled { message = "Apple 家庭开机失败 · " + error.localizedDescription }
+            }
+        }
+    }
+
+    func cancel() {
+        pendingRemote = nil
+        wakeTask?.cancel()
+        wakeTask = nil
+        waking = false
+        message = nil
     }
 }

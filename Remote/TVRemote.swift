@@ -82,11 +82,13 @@ final class TVRemote: ObservableObject {
         disconnect()
     }
 
-    func reconnectIfPaired() {
+    var hasSavedPairing: Bool {
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !reconnectPaused, state == .disconnected,
-              UserDefaults.standard.string(forKey: "lastTV") == host,
-              savedPairing(for: host) != nil else { return }
+        return UserDefaults.standard.string(forKey: "lastTV") == host && savedPairing(for: host) != nil
+    }
+
+    func reconnectIfPaired() {
+        guard !reconnectPaused, state == .disconnected, hasSavedPairing else { return }
         connect()
     }
 
@@ -95,7 +97,7 @@ final class TVRemote: ObservableObject {
             .flatMap { try? JSONDecoder().decode(Pairing.self, from: $0) }
     }
 
-    func connect() {
+    func connect(timeoutSeconds: Int = 60) {
         reconnectPaused = false
         disconnect()
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -126,7 +128,7 @@ final class TVRemote: ObservableObject {
         socket.resume()
 
         timeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(60))
+            try? await Task.sleep(for: .seconds(timeoutSeconds))
             guard !Task.isCancelled, let self, self.control === socket else { return }
             self.disconnect("连接超时，请检查 IP、网络和电视上的配对提示")
         }

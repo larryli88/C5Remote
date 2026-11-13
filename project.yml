@@ -10,6 +10,7 @@ targets:
     info:
       path: Info.plist
       properties:
+        NSHomeKitUsageDescription: Turn on your paired television using Apple Home.
         CFBundleDisplayName: C5 Remote
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Connect to your LG TV on your home network.
@@ -20,4 +21,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.c5remote
         TARGETED_DEVICE_FAMILY: 1
         SWIFT_VERSION: 5.0
+        CODE_SIGN_ENTITLEMENTS: C5Remote.entitlements
         CODE_SIGN_STYLE: Automatic

@@ -78,6 +78,9 @@
 				TargetAttributes = {
 					BF57A8BDAC7D199B140BFB1C = {
 						ProvisioningStyle = Automatic;
+                        SystemCapabilities = {
+                            com.apple.HomeKit = { enabled = 1; };
+                        };
 					};
 				};
 			};
@@ -126,6 +129,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = C5Remote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -143,6 +147,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = C5Remote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
