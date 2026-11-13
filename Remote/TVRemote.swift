@@ -64,7 +64,6 @@ final class TVRemote: ObservableObject {
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
     @Published private(set) var brightness: Int?
-    @Published private(set) var brightnessWriteDenied = false
     @Published private(set) var brightnessError: String?
     @Published private(set) var adjustingBrightness = false
 
@@ -82,7 +81,7 @@ final class TVRemote: ObservableObject {
     private var pointer: URLSessionWebSocketTask?
     private var timeout: Task<Void, Never>?
     private var powerRequest: String?
-    private var brightnessRequest: (id: String, isWrite: Bool, expectedValue: Int?)?
+    private var brightnessRequest: (id: String, expectedValue: Int?, key: String?)?
     private var ipControlConnection: NWConnection?
     private var brightnessTimeout: Task<Void, Never>?
 
@@ -159,7 +158,7 @@ final class TVRemote: ObservableObject {
                         "permissions": [
                             "CONTROL_AUDIO", "CONTROL_INPUT_TV", "CONTROL_MOUSE_AND_KEYBOARD",
                             "CONTROL_POWER", "CONTROL_INPUT_JOYSTICK", "LAUNCH", "READ_INPUT_DEVICE_LIST",
-                            "READ_SETTINGS", "WRITE_SETTINGS"
+                            "READ_SETTINGS"
                         ]
                     ]
                 ]
@@ -181,15 +180,7 @@ final class TVRemote: ObservableObject {
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
                     if let pending = self.brightnessRequest, pending.id == id {
                         if failed {
-                            if pending.isWrite,
-                               reason.hasPrefix("401") || reason.localizedCaseInsensitiveContains("insufficient permissions") {
-                                self.brightnessWriteDenied = true
-                                self.finishBrightnessRequest()
-                            } else {
-                                self.finishBrightnessRequest(error: reason)
-                            }
-                        } else if pending.isWrite {
-                            self.readBrightness()
+                            self.finishBrightnessRequest(error: reason)
                         } else if let settings = body?["settings"] as? [String: Any],
                                   let raw = settings["backlight"],
                                   let value = Int(String(describing: raw).trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -197,9 +188,13 @@ final class TVRemote: ObservableObject {
                             self.brightness = value
                             self.brightnessDraft = Double(value)
                             let mismatch = pending.expectedValue.map { $0 != value } ?? false
-                            self.finishBrightnessRequest(error: mismatch
-                                ? "电视未确认目标亮度。请检查 IP Control 密钥和电视设置。"
-                                : nil)
+                            if mismatch {
+                                self.finishBrightnessRequest(error: "电视未确认目标亮度。请检查 IP Control 密钥和电视设置。")
+                            } else if let key = pending.key, !self.saveIPControlKey(key) {
+                                self.finishBrightnessRequest(error: "亮度已调整，但密钥未能保存到钥匙串。")
+                            } else {
+                                self.finishBrightnessRequest()
+                            }
                         } else {
                             let settings = body?["settings"] as? [String: Any]
                             let message = settings?["backlight"] == nil
@@ -294,7 +289,7 @@ final class TVRemote: ObservableObject {
         finishBrightnessRequest()
         showingBrightness = false
         brightness = nil
-        brightnessWriteDenied = false
+        ipControlKey = ""
         finishInputRequest()
         showingInputs = false
         inputs = []
@@ -304,6 +299,7 @@ final class TVRemote: ObservableObject {
     }
 
     func forgetTV() {
+        if let query = ipControlKeychainQuery { SecItemDelete(query as CFDictionary) }
         disconnect("已清除配对，请在电视上重新授权")
         UserDefaults.standard.removeObject(forKey: "tvPairing." + address.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -364,23 +360,15 @@ final class TVRemote: ObservableObject {
     }
 
     func openBrightness() {
-        guard state == .ready, brightnessRequest == nil else { return }
+        guard state == .ready, !adjustingBrightness else { return }
+        ipControlKey = loadIPControlKey() ?? ""
         showingBrightness = true
         readBrightness()
     }
 
     func applyBrightness() {
-        guard state == .ready, !brightnessWriteDenied, let brightness, brightnessRequest == nil else { return }
-        let value = Int(brightnessDraft.rounded())
-        guard (0...100).contains(value), value != brightness else { return }
-        sendBrightnessRequest("settings/setSystemSettings",
-                              payload: ["category": "picture", "settings": ["backlight": value]],
-                              isWrite: true)
-    }
-
-    func applyIPControlBrightness(key: String) {
         guard state == .ready, !adjustingBrightness, let brightness else { return }
-        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.utf8.count == 8, key.utf8.allSatisfy({ (33...126).contains($0) }) else {
             brightnessError = "请输入电视生成的 8 位 IP Control 密钥。"
             return
@@ -413,7 +401,7 @@ final class TVRemote: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(750))
                 guard self.ipControlConnection === connection else { return }
                 self.finishIPControl(connection)
-                self.readBrightness(expectedValue: value)
+                self.readBrightness(expectedValue: value, key: key)
             }
         })
     }
@@ -452,20 +440,48 @@ final class TVRemote: ObservableObject {
         return Data(output.prefix(length))
     }
 
-    private func readBrightness(expectedValue: Int? = nil) {
-        brightness = nil
-        sendBrightnessRequest("settings/getSystemSettings",
-                              payload: ["category": "picture", "keys": ["backlight"]],
-                              expectedValue: expectedValue)
+    private var ipControlKeychainQuery: [String: Any]? {
+        let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pairing = savedPairing(for: host) else { return nil }
+        return [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "C5Remote.IPControl",
+            kSecAttrAccount as String: host + ":" + pairing.fingerprint
+        ]
     }
 
-    private func sendBrightnessRequest(_ path: String, payload: [String: Any], isWrite: Bool = false, expectedValue: Int? = nil) {
+    private func loadIPControlKey() -> String? {
+        guard var query = ipControlKeychainQuery else { return nil }
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func saveIPControlKey(_ key: String) -> Bool {
+        guard var query = ipControlKeychainQuery else { return false }
+        let attributes = [kSecValueData as String: Data(key.utf8)]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        guard status == errSecItemNotFound else { return status == errSecSuccess }
+        query.merge(attributes) { _, new in new }
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let added = SecItemAdd(query as CFDictionary, nil)
+        if added == errSecDuplicateItem {
+            return loadIPControlKey() == key
+        }
+        return added == errSecSuccess
+    }
+
+    private func readBrightness(expectedValue: Int? = nil, key: String? = nil) {
+        brightness = nil
         brightnessTimeout?.cancel()
         brightnessError = nil
         adjustingBrightness = true
         let id = UUID().uuidString
-        brightnessRequest = (id, isWrite, expectedValue)
-        request(path, payload: payload, id: id)
+        brightnessRequest = (id, expectedValue, key)
+        request("settings/getSystemSettings", payload: ["category": "picture", "keys": ["backlight"]], id: id)
         brightnessTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled, let self, self.brightnessRequest?.id == id else { return }
