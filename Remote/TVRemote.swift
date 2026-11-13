@@ -64,6 +64,7 @@ final class TVRemote: ObservableObject {
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
     @Published private(set) var brightness: Int?
+    @Published private(set) var autoBrightnessNotice: String?
     @Published private(set) var brightnessError: String?
     @Published private(set) var adjustingBrightness = false
 
@@ -361,6 +362,7 @@ final class TVRemote: ObservableObject {
 
     func openBrightness() {
         guard state == .ready, !adjustingBrightness else { return }
+        autoBrightnessNotice = nil
         ipControlKey = loadIPControlKey() ?? ""
         showingBrightness = true
         readBrightness()
@@ -368,14 +370,24 @@ final class TVRemote: ObservableObject {
 
     func applyBrightness() {
         guard state == .ready, !adjustingBrightness, let brightness else { return }
+        let value = Int(brightnessDraft.rounded())
+        guard (0...100).contains(value), value != brightness else { return }
+        sendIPControl("PICTURE_BACKLIGHT \(value)", expectedBrightness: value)
+    }
+
+    func enableAutoBrightness() {
+        sendIPControl("ENERGY_SAVING auto")
+    }
+
+    private func sendIPControl(_ command: String, expectedBrightness: Int? = nil) {
+        guard state == .ready, !adjustingBrightness else { return }
         let key = ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.utf8.count == 8, key.utf8.allSatisfy({ (33...126).contains($0) }) else {
             brightnessError = "请输入电视生成的 8 位 IP Control 密钥。"
             return
         }
-        let value = Int(brightnessDraft.rounded())
-        guard (0...100).contains(value), value != brightness else { return }
-        guard let packet = Self.ipControlPacket(value: value, password: key) else {
+        autoBrightnessNotice = nil
+        guard let packet = Self.ipControlPacket(command: command, password: key) else {
             brightnessError = "无法生成 IP Control 请求。"
             return
         }
@@ -401,7 +413,11 @@ final class TVRemote: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(750))
                 guard self.ipControlConnection === connection else { return }
                 self.finishIPControl(connection)
-                self.readBrightness(expectedValue: value, key: key)
+                if let expectedBrightness {
+                    self.readBrightness(expectedValue: expectedBrightness, key: key)
+                } else {
+                    self.autoBrightnessNotice = "已发送自动亮度指令。请在电视的「节能步骤」确认是否切到「自动」。"
+                }
             }
         })
     }
@@ -412,7 +428,7 @@ final class TVRemote: ObservableObject {
         finishBrightnessRequest(error: error)
     }
 
-    private static func ipControlPacket(value: Int, password: String) -> Data? {
+    private static func ipControlPacket(command: String, password: String) -> Data? {
         // LG IP Control derives an AES-128 key using the protocol's fixed salt.
         let salt: [UInt8] = [0x63, 0x61, 0xb8, 0x0e, 0x9b, 0xdc, 0xa6, 0x63,
                              0x8d, 0x07, 0x20, 0xf2, 0xcc, 0x56, 0x8f, 0xb9]
@@ -423,7 +439,7 @@ final class TVRemote: ObservableObject {
         var iv = [UInt8](repeating: 0, count: kCCBlockSizeAES128)
         guard SecRandomCopyBytes(kSecRandomDefault, iv.count, &iv) == errSecSuccess else { return nil }
         guard let encryptedIV = encrypt(iv, key: key, iv: nil, options: CCOptions(kCCOptionECBMode)),
-              let encryptedCommand = encrypt(Array("PICTURE_BACKLIGHT \(value)\r".utf8),
+              let encryptedCommand = encrypt(Array((command + "\r").utf8),
                                              key: key, iv: iv, options: CCOptions(kCCOptionPKCS7Padding)) else {
             return nil
         }

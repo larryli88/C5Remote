@@ -120,14 +120,22 @@ private struct RemoteView: View {
                                 .accessibilityLabel("OLED 像素亮度")
                             Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
                                 .monospacedDigit()
-                            SecureField("电视的 IP Control 密钥", text: $tv.ipControlKey)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
                             Button("应用") { tv.applyBrightness() }
                                 .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                           || Int(tv.brightnessDraft) == current)
                         }
                         .disabled(tv.adjustingBrightness)
+                    }
+                    Section {
+                        SecureField("电视的 IP Control 密钥", text: $tv.ipControlKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button("开启自动亮度") { tv.enableAutoBrightness() }
+                            .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .disabled(tv.adjustingBrightness)
+                    if let notice = tv.autoBrightnessNotice {
+                        Text(notice).foregroundStyle(.secondary)
                     }
                     if tv.adjustingBrightness {
                         ProgressView("等待电视回应…")
