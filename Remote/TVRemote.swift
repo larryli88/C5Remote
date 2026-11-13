@@ -60,6 +60,7 @@ final class TVRemote: ObservableObject {
     }
 
     @Published var ipControlKey = ""
+    @Published var showingIPControlKey = false
 
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
@@ -86,7 +87,7 @@ final class TVRemote: ObservableObject {
     private var brightnessRequest: (id: String, expectedValue: Int?, key: String?)?
     private enum EnergyCheck {
         case display
-        case enableAuto
+        case enableAuto(String)
         case manual(Int)
         case verifyOff(Int)
     }
@@ -306,7 +307,7 @@ final class TVRemote: ObservableObject {
         showingBrightness = false
         energySavingMode = nil
         brightness = nil
-        ipControlKey = ""
+        clearIPControlKeyEntry()
         finishInputRequest()
         showingInputs = false
         inputs = []
@@ -395,8 +396,8 @@ final class TVRemote: ObservableObject {
     }
 
     func enableAutoBrightness() {
-        sendIPControl("ENERGY_SAVING auto") { _ in
-            self.readEnergySaving(.enableAuto)
+        sendIPControl("ENERGY_SAVING auto") { key in
+            self.readEnergySaving(.enableAuto(key))
         }
     }
 
@@ -483,6 +484,24 @@ final class TVRemote: ObservableObject {
         ]
     }
 
+    func resetIPControlKey() {
+        guard !adjustingBrightness else { return }
+        if let query = ipControlKeychainQuery {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                brightnessError = "无法从钥匙串删除 IP Control 密钥。"
+                return
+            }
+        }
+        clearIPControlKeyEntry()
+        brightnessError = nil
+    }
+
+    func clearIPControlKeyEntry() {
+        ipControlKey = ""
+        showingIPControlKey = false
+    }
+
     private func loadIPControlKey() -> String? {
         guard var query = ipControlKeychainQuery else { return nil }
         query[kSecReturnData as String] = true
@@ -527,9 +546,12 @@ final class TVRemote: ObservableObject {
         switch check {
         case .display:
             readBrightness()
-        case .enableAuto:
+        case .enableAuto(let key):
             if mode == "auto" {
                 autoBrightnessNotice = "电视已确认开启自动亮度。"
+                if !saveIPControlKey(key) {
+                    brightnessError = "自动亮度已开启，但密钥未能保存到钥匙串。"
+                }
             } else {
                 brightnessError = "电视未确认自动亮度，请在「节能步骤」查看。"
             }

@@ -111,7 +111,7 @@ private struct RemoteView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $tv.showingBrightness, onDismiss: { tv.ipControlKey = "" }) {
+        .sheet(isPresented: $tv.showingBrightness, onDismiss: tv.clearIPControlKeyEntry) {
             NavigationStack {
                 Form {
                     LabeledContent("亮度模式", value: brightnessModeLabel)
@@ -128,13 +128,34 @@ private struct RemoteView: View {
                         .disabled(tv.adjustingBrightness)
                     }
                     Section {
-                        SecureField("电视的 IP Control 密钥", text: $tv.ipControlKey)
+                        HStack {
+                            Group {
+                                if tv.showingIPControlKey {
+                                    TextField("电视的 IP Control 密钥", text: $tv.ipControlKey)
+                                } else {
+                                    SecureField("电视的 IP Control 密钥", text: $tv.ipControlKey)
+                                }
+                            }
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        Button("开启自动亮度") { tv.enableAutoBrightness() }
-                            .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button {
+                                tv.showingIPControlKey.toggle()
+                            } label: {
+                                Image(systemName: tv.showingIPControlKey ? "eye.slash" : "eye")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(tv.showingIPControlKey ? "隐藏密钥" : "显示密钥")
+                            .disabled(tv.ipControlKey.isEmpty)
+                        }
+                        Button("重置 IP Control 密钥", role: .destructive) {
+                            tv.resetIPControlKey()
+                        }
+                    } footer: {
+                        Text("手动和自动亮度共用这个密钥。")
                     }
                     .disabled(tv.adjustingBrightness)
+                    Button("开启自动亮度") { tv.enableAutoBrightness() }
+                        .disabled(tv.adjustingBrightness || tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let notice = tv.autoBrightnessNotice {
                         Text(notice).foregroundStyle(.secondary)
                     }
