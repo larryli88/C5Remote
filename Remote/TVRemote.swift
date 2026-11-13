@@ -61,6 +61,7 @@ final class TVRemote: ObservableObject {
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
     @Published private(set) var brightness: Int?
+    @Published private(set) var brightnessWriteDenied = false
     @Published private(set) var brightnessError: String?
     @Published private(set) var adjustingBrightness = false
 
@@ -176,7 +177,13 @@ final class TVRemote: ObservableObject {
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
                     if let pending = self.brightnessRequest, pending.id == id {
                         if failed {
-                            self.finishBrightnessRequest(error: reason)
+                            if pending.isWrite,
+                               reason.hasPrefix("401") || reason.localizedCaseInsensitiveContains("insufficient permissions") {
+                                self.brightnessWriteDenied = true
+                                self.finishBrightnessRequest()
+                            } else {
+                                self.finishBrightnessRequest(error: reason)
+                            }
                         } else if pending.isWrite {
                             self.readBrightness()
                         } else if let settings = body?["settings"] as? [String: Any],
@@ -278,6 +285,7 @@ final class TVRemote: ObservableObject {
         finishBrightnessRequest()
         showingBrightness = false
         brightness = nil
+        brightnessWriteDenied = false
         finishInputRequest()
         showingInputs = false
         inputs = []
@@ -343,7 +351,7 @@ final class TVRemote: ObservableObject {
 
     func openTVSettings() {
         showingBrightness = false
-        request("system.launcher/launch", payload: ["id": "com.webos.app.settings"])
+        press("MENU")
     }
 
     func openBrightness() {
@@ -353,7 +361,7 @@ final class TVRemote: ObservableObject {
     }
 
     func applyBrightness() {
-        guard state == .ready, let brightness, brightnessRequest == nil else { return }
+        guard state == .ready, !brightnessWriteDenied, let brightness, brightnessRequest == nil else { return }
         let value = Int(brightnessDraft.rounded())
         guard (0...100).contains(value), value != brightness else { return }
         sendBrightnessRequest("settings/setSystemSettings",

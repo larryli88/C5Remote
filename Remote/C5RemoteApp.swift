@@ -116,17 +116,25 @@ private struct RemoteView: View {
                 Form {
                     if let current = tv.brightness {
                         Section {
-                            Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
-                                .accessibilityLabel("OLED 像素亮度")
-                            Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
-                                .monospacedDigit()
-                            Button("应用") { tv.applyBrightness() }
-                                .disabled(Int(tv.brightnessDraft) == current)
+                            if tv.brightnessWriteDenied {
+                                Text("当前亮度 \(current)").monospacedDigit()
+                            } else {
+                                Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
+                                    .accessibilityLabel("OLED 像素亮度")
+                                Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
+                                    .monospacedDigit()
+                                Button("应用") { tv.applyBrightness() }
+                                    .disabled(Int(tv.brightnessDraft) == current)
+                            }
                         }
                         .disabled(tv.adjustingBrightness)
                     }
                     if tv.adjustingBrightness {
                         ProgressView("等待电视回应…")
+                    }
+                    if tv.brightnessWriteDenied {
+                        Text("电视允许读取亮度。请在电视设置里调整亮度。")
+                            .foregroundStyle(.secondary)
                     }
                     if let error = tv.brightnessError {
                         Text(error).foregroundStyle(.secondary)
@@ -136,7 +144,7 @@ private struct RemoteView: View {
                             tv.openTVSettings()
                         }
                     } footer: {
-                        Text("在电视设置里选「画面 → 高级设置 → 亮度 → OLED 像素亮度」。")
+                        Text("在电视的快速设置里选「所有设置 → 画面 → 高级设置 → 亮度 → OLED 像素亮度」。")
                     }
                 }
                 .navigationTitle("OLED 像素亮度")
