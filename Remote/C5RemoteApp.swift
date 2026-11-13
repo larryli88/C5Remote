@@ -48,16 +48,16 @@ private struct RemoteView: View {
                     .overlay { connectionStatus }
 
                     if tv.state == .ready {
-                        trackpad.frame(height: max(185, geometry.size.height - 266))
-                        HStack {
-                            roundKey("chevron.left", label: "返回", size: 78, iconSize: 28) { tv.press("BACK") }
-                            Spacer()
-                            roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
-                        }
+                        trackpad.frame(height: max(185, geometry.size.height - 272))
+                        roundKey("chevron.left", label: "返回", size: 84, iconSize: 30) { tv.press("BACK") }
+                            .frame(maxWidth: .infinity)
+                            .overlay(alignment: .trailing) {
+                                roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
+                            }
                         HStack(spacing: 16) {
                             volumeControl
                                 .contextMenu { Button("断开连接") { disconnectManually() } }
-                            roundKey("sun.max", label: "OLED 像素亮度", size: 54) { tv.openBrightness() }
+                            roundKey("gearshape", label: "设置", size: 54) { tv.openBrightness() }
                         }
 
                         if let error = tv.commandError {
@@ -173,7 +173,7 @@ private struct RemoteView: View {
                         Text("在电视的快速设置里选「所有设置 → 画面 → 高级设置 → 亮度 → OLED 像素亮度」。")
                     }
                 }
-                .navigationTitle("OLED 像素亮度")
+                .navigationTitle("设置")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("关闭") { tv.showingBrightness = false }
@@ -309,10 +309,19 @@ private struct RemoteView: View {
         HStack(spacing: 0) {
             key("speaker.minus", label: "降低音量") { tv.volume(false) }
                 .frame(width: 72, height: 54)
-            Text(tv.currentVolume.map { String($0) } ?? "–")
-                .font(.subheadline.monospacedDigit())
-                .frame(width: 45)
-                .accessibilityLabel(tv.currentVolume.map { "当前音量 \($0)" } ?? "音量未知")
+            ZStack {
+                if tv.showsCurrentVolume, let volume = tv.currentVolume {
+                    Text(String(volume))
+                        .font(.subheadline.monospacedDigit())
+                        .accessibilityLabel("当前音量 \(volume)")
+                } else {
+                    Rectangle()
+                        .fill(.white.opacity(0.2))
+                        .frame(width: 1, height: 24)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(width: 45)
             key("speaker.plus", label: "提高音量") { tv.volume(true) }
                 .frame(width: 72, height: 54)
         }
