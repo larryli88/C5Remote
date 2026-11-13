@@ -111,21 +111,29 @@ private struct RemoteView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $tv.showingBrightness) {
+        .sheet(isPresented: $tv.showingBrightness, onDismiss: { tv.ipControlKey = "" }) {
             NavigationStack {
                 Form {
                     if let current = tv.brightness {
                         Section {
-                            if tv.brightnessWriteDenied {
-                                Text("当前亮度 \(current)").monospacedDigit()
-                            } else {
-                                Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
-                                    .accessibilityLabel("OLED 像素亮度")
-                                Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
-                                    .monospacedDigit()
+                            Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
+                                .accessibilityLabel("OLED 像素亮度")
+                            Text("当前亮度 \(current) · 待设为 \(Int(tv.brightnessDraft))")
+                                .monospacedDigit()
+                            if !tv.brightnessWriteDenied, tv.ipControlKey.isEmpty {
                                 Button("应用") { tv.applyBrightness() }
                                     .disabled(Int(tv.brightnessDraft) == current)
                             }
+                        }
+                        .disabled(tv.adjustingBrightness)
+                        Section {
+                            SecureField("电视的 IP Control 密钥", text: $tv.ipControlKey)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Button("通过 IP Control 应用") {
+                                tv.applyIPControlBrightness(key: tv.ipControlKey)
+                            }
+                            .disabled(tv.ipControlKey.isEmpty || Int(tv.brightnessDraft) == current)
                         }
                         .disabled(tv.adjustingBrightness)
                     }
@@ -133,7 +141,7 @@ private struct RemoteView: View {
                         ProgressView("等待电视回应…")
                     }
                     if tv.brightnessWriteDenied {
-                        Text("电视允许读取亮度。请在电视设置里调整亮度。")
+                        Text("普通遥控连接只允许读取亮度。可用 IP Control 密钥测试写入。")
                             .foregroundStyle(.secondary)
                     }
                     if let error = tv.brightnessError {

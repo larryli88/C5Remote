@@ -1,3 +1,4 @@
+import CommonCrypto
 import CryptoKit
 import Foundation
 import Network
@@ -58,6 +59,8 @@ final class TVRemote: ObservableObject {
         let fingerprint: String
     }
 
+    @Published var ipControlKey = ""
+
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
     @Published private(set) var brightness: Int?
@@ -79,7 +82,8 @@ final class TVRemote: ObservableObject {
     private var pointer: URLSessionWebSocketTask?
     private var timeout: Task<Void, Never>?
     private var powerRequest: String?
-    private var brightnessRequest: (id: String, isWrite: Bool)?
+    private var brightnessRequest: (id: String, isWrite: Bool, expectedValue: Int?)?
+    private var ipControlConnection: NWConnection?
     private var brightnessTimeout: Task<Void, Never>?
 
     private var inputRequest: String?
@@ -192,7 +196,10 @@ final class TVRemote: ObservableObject {
                                   (0...100).contains(value) {
                             self.brightness = value
                             self.brightnessDraft = Double(value)
-                            self.finishBrightnessRequest()
+                            let mismatch = pending.expectedValue.map { $0 != value } ?? false
+                            self.finishBrightnessRequest(error: mismatch
+                                ? "电视未确认目标亮度。请检查 IP Control 密钥和电视设置。"
+                                : nil)
                         } else {
                             let settings = body?["settings"] as? [String: Any]
                             let message = settings?["backlight"] == nil
@@ -282,6 +289,8 @@ final class TVRemote: ObservableObject {
         control = nil
         session = nil
         powerRequest = nil
+        ipControlConnection?.cancel()
+        ipControlConnection = nil
         finishBrightnessRequest()
         showingBrightness = false
         brightness = nil
@@ -369,18 +378,93 @@ final class TVRemote: ObservableObject {
                               isWrite: true)
     }
 
-    private func readBrightness() {
-        brightness = nil
-        sendBrightnessRequest("settings/getSystemSettings",
-                              payload: ["category": "picture", "keys": ["backlight"]])
+    func applyIPControlBrightness(key: String) {
+        guard state == .ready, !adjustingBrightness, let brightness else { return }
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.utf8.count == 8, key.utf8.allSatisfy({ (33...126).contains($0) }) else {
+            brightnessError = "请输入电视生成的 8 位 IP Control 密钥。"
+            return
+        }
+        let value = Int(brightnessDraft.rounded())
+        guard (0...100).contains(value), value != brightness else { return }
+        guard let packet = Self.ipControlPacket(value: value, password: key) else {
+            brightnessError = "无法生成 IP Control 请求。"
+            return
+        }
+
+        adjustingBrightness = true
+        brightnessError = nil
+        let connection = NWConnection(host: NWEndpoint.Host(address), port: 9761, using: .tcp)
+        ipControlConnection = connection
+        brightnessTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled, let self, self.ipControlConnection === connection else { return }
+            self.finishIPControl(connection, error: "IP Control 连接超时。请确认电视已开启 Network IP Control。")
+        }
+        connection.start(queue: .main)
+        connection.send(content: packet, completion: .contentProcessed { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.ipControlConnection === connection else { return }
+                if let error {
+                    self.finishIPControl(connection, error: "IP Control 发送失败 · " + error.localizedDescription)
+                    return
+                }
+                // Keep the socket open briefly while the TV processes the write.
+                try? await Task.sleep(for: .milliseconds(750))
+                guard self.ipControlConnection === connection else { return }
+                self.finishIPControl(connection)
+                self.readBrightness(expectedValue: value)
+            }
+        })
     }
 
-    private func sendBrightnessRequest(_ path: String, payload: [String: Any], isWrite: Bool = false) {
+    private func finishIPControl(_ connection: NWConnection, error: String? = nil) {
+        ipControlConnection = nil
+        connection.cancel()
+        finishBrightnessRequest(error: error)
+    }
+
+    private static func ipControlPacket(value: Int, password: String) -> Data? {
+        // LG IP Control derives an AES-128 key using the protocol's fixed salt.
+        let salt: [UInt8] = [0x63, 0x61, 0xb8, 0x0e, 0x9b, 0xdc, 0xa6, 0x63,
+                             0x8d, 0x07, 0x20, 0xf2, 0xcc, 0x56, 0x8f, 0xb9]
+        var key = [UInt8](repeating: 0, count: kCCKeySizeAES128)
+        guard CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), password, password.utf8.count,
+                                   salt, salt.count, CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                                   16_384, &key, key.count) == kCCSuccess else { return nil }
+        var iv = [UInt8](repeating: 0, count: kCCBlockSizeAES128)
+        guard SecRandomCopyBytes(kSecRandomDefault, iv.count, &iv) == errSecSuccess else { return nil }
+        guard let encryptedIV = encrypt(iv, key: key, iv: nil, options: CCOptions(kCCOptionECBMode)),
+              let encryptedCommand = encrypt(Array("PICTURE_BACKLIGHT \(value)\r".utf8),
+                                             key: key, iv: iv, options: CCOptions(kCCOptionPKCS7Padding)) else {
+            return nil
+        }
+        return encryptedIV + encryptedCommand
+    }
+
+    private static func encrypt(_ input: [UInt8], key: [UInt8], iv: [UInt8]?, options: CCOptions) -> Data? {
+        var output = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
+        let capacity = output.count
+        var length = 0
+        let result = CCCrypt(CCOperation(kCCEncrypt), CCAlgorithm(kCCAlgorithmAES), options,
+                             key, key.count, iv, input, input.count, &output, capacity, &length)
+        guard result == kCCSuccess else { return nil }
+        return Data(output.prefix(length))
+    }
+
+    private func readBrightness(expectedValue: Int? = nil) {
+        brightness = nil
+        sendBrightnessRequest("settings/getSystemSettings",
+                              payload: ["category": "picture", "keys": ["backlight"]],
+                              expectedValue: expectedValue)
+    }
+
+    private func sendBrightnessRequest(_ path: String, payload: [String: Any], isWrite: Bool = false, expectedValue: Int? = nil) {
         brightnessTimeout?.cancel()
         brightnessError = nil
         adjustingBrightness = true
         let id = UUID().uuidString
-        brightnessRequest = (id, isWrite)
+        brightnessRequest = (id, isWrite, expectedValue)
         request(path, payload: payload, id: id)
         brightnessTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
