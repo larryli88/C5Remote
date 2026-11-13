@@ -64,6 +64,7 @@ final class TVRemote: ObservableObject {
     @Published var showingBrightness = false
     @Published var brightnessDraft = 0.0
     @Published private(set) var brightness: Int?
+    @Published private(set) var energySavingMode: String?
     @Published private(set) var autoBrightnessNotice: String?
     @Published private(set) var brightnessError: String?
     @Published private(set) var adjustingBrightness = false
@@ -83,6 +84,14 @@ final class TVRemote: ObservableObject {
     private var timeout: Task<Void, Never>?
     private var powerRequest: String?
     private var brightnessRequest: (id: String, expectedValue: Int?, key: String?)?
+    private enum EnergyCheck {
+        case display
+        case enableAuto
+        case manual(Int)
+        case verifyOff(Int)
+    }
+
+    private var energyRequest: (id: String, check: EnergyCheck)?
     private var ipControlConnection: NWConnection?
     private var brightnessTimeout: Task<Void, Never>?
 
@@ -179,6 +188,12 @@ final class TVRemote: ObservableObject {
                     let id = response["id"] as? String
                     let failed = response["type"] as? String == "error" || body?["returnValue"] as? Bool == false
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
+                    if let pending = self.energyRequest, pending.id == id {
+                        let settings = body?["settings"] as? [String: Any]
+                        let mode = failed ? nil : settings?["energySaving"] as? String
+                        self.handleEnergySaving(mode, check: pending.check)
+                        continue
+                    }
                     if let pending = self.brightnessRequest, pending.id == id {
                         if failed {
                             self.finishBrightnessRequest(error: reason)
@@ -289,6 +304,7 @@ final class TVRemote: ObservableObject {
         ipControlConnection = nil
         finishBrightnessRequest()
         showingBrightness = false
+        energySavingMode = nil
         brightness = nil
         ipControlKey = ""
         finishInputRequest()
@@ -363,23 +379,28 @@ final class TVRemote: ObservableObject {
     func openBrightness() {
         guard state == .ready, !adjustingBrightness else { return }
         autoBrightnessNotice = nil
+        energySavingMode = nil
         ipControlKey = loadIPControlKey() ?? ""
         showingBrightness = true
-        readBrightness()
+        readEnergySaving(.display)
     }
 
     func applyBrightness() {
         guard state == .ready, !adjustingBrightness, let brightness else { return }
         let value = Int(brightnessDraft.rounded())
-        guard (0...100).contains(value), value != brightness else { return }
-        sendIPControl("PICTURE_BACKLIGHT \(value)", expectedBrightness: value)
+        guard (0...100).contains(value), value != brightness || energySavingMode == "auto" else { return }
+        autoBrightnessNotice = nil
+        brightnessError = nil
+        readEnergySaving(.manual(value))
     }
 
     func enableAutoBrightness() {
-        sendIPControl("ENERGY_SAVING auto")
+        sendIPControl("ENERGY_SAVING auto") { _ in
+            self.readEnergySaving(.enableAuto)
+        }
     }
 
-    private func sendIPControl(_ command: String, expectedBrightness: Int? = nil) {
+    private func sendIPControl(_ command: String, onSent: @escaping (String) -> Void) {
         guard state == .ready, !adjustingBrightness else { return }
         let key = ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.utf8.count == 8, key.utf8.allSatisfy({ (33...126).contains($0) }) else {
@@ -413,11 +434,7 @@ final class TVRemote: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(750))
                 guard self.ipControlConnection === connection else { return }
                 self.finishIPControl(connection)
-                if let expectedBrightness {
-                    self.readBrightness(expectedValue: expectedBrightness, key: key)
-                } else {
-                    self.autoBrightnessNotice = "已发送自动亮度指令。请在电视的「节能步骤」确认是否切到「自动」。"
-                }
+                onSent(key)
             }
         })
     }
@@ -490,6 +507,55 @@ final class TVRemote: ObservableObject {
         return added == errSecSuccess
     }
 
+    private func readEnergySaving(_ check: EnergyCheck) {
+        adjustingBrightness = true
+        let id = UUID().uuidString
+        energyRequest = (id, check)
+        request("settings/getSystemSettings", payload: ["category": "picture", "keys": ["energySaving"]], id: id)
+        brightnessTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, let self, self.energyRequest?.id == id else { return }
+            self.handleEnergySaving(nil, check: check)
+        }
+    }
+
+    private func handleEnergySaving(_ rawMode: String?, check: EnergyCheck) {
+        let mode = rawMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        energySavingMode = mode
+        finishBrightnessRequest()
+
+        switch check {
+        case .display:
+            readBrightness()
+        case .enableAuto:
+            if mode == "auto" {
+                autoBrightnessNotice = "电视已确认开启自动亮度。"
+            } else {
+                brightnessError = "电视未确认自动亮度，请在「节能步骤」查看。"
+            }
+        case .manual(let value):
+            if mode == "off" || mode == "minimum" || mode == "min" || mode == "medium" || mode == "med" {
+                writeManualBrightness(value)
+            } else {
+                sendIPControl("ENERGY_SAVING off") { _ in
+                    self.readEnergySaving(.verifyOff(value))
+                }
+            }
+        case .verifyOff(let value):
+            guard mode == "off" else {
+                brightnessError = "无法确认自动亮度已关闭。请在电视上关闭「节能步骤」后重试。"
+                return
+            }
+            writeManualBrightness(value)
+        }
+    }
+
+    private func writeManualBrightness(_ value: Int) {
+        sendIPControl("PICTURE_BACKLIGHT \(value)") { key in
+            self.readBrightness(expectedValue: value, key: key)
+        }
+    }
+
     private func readBrightness(expectedValue: Int? = nil, key: String? = nil) {
         brightness = nil
         brightnessTimeout?.cancel()
@@ -510,6 +576,7 @@ final class TVRemote: ObservableObject {
         brightnessTimeout?.cancel()
         brightnessTimeout = nil
         brightnessRequest = nil
+        energyRequest = nil
         brightnessError = error
         adjustingBrightness = false
     }

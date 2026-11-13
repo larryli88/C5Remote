@@ -114,6 +114,7 @@ private struct RemoteView: View {
         .sheet(isPresented: $tv.showingBrightness, onDismiss: { tv.ipControlKey = "" }) {
             NavigationStack {
                 Form {
+                    LabeledContent("亮度模式", value: brightnessModeLabel)
                     if let current = tv.brightness {
                         Section {
                             Slider(value: $tv.brightnessDraft, in: 0...100, step: 1)
@@ -122,7 +123,7 @@ private struct RemoteView: View {
                                 .monospacedDigit()
                             Button("应用") { tv.applyBrightness() }
                                 .disabled(tv.ipControlKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                          || Int(tv.brightnessDraft) == current)
+                                          || (Int(tv.brightnessDraft) == current && tv.energySavingMode != "auto"))
                         }
                         .disabled(tv.adjustingBrightness)
                     }
@@ -188,6 +189,17 @@ private struct RemoteView: View {
         }
         .confirmationDialog("关闭电视？", isPresented: $tv.confirmPowerOff, titleVisibility: .visible) {
             Button("关闭电视", role: .destructive) { tv.powerOff() }
+        }
+    }
+
+    private var brightnessModeLabel: String {
+        switch tv.energySavingMode {
+        case "auto": return "自动"
+        case "off": return "手动"
+        case "minimum", "min": return "节能 · 最低"
+        case "medium", "med": return "节能 · 中等"
+        case "maximum", "max": return "节能 · 最高"
+        default: return "未知"
         }
     }
 
