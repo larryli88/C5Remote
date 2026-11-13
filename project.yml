@@ -1,0 +1,23 @@
+name: C5Remote
+options:
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  C5Remote:
+    type: application
+    platform: iOS
+    sources: [Remote]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: C5 Remote
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: Connect to your LG TV on your home network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.c5remote
+        TARGETED_DEVICE_FAMILY: 1
+        SWIFT_VERSION: 5.0
+        CODE_SIGN_STYLE: Automatic
