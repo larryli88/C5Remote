@@ -308,13 +308,13 @@ private struct RemoteView: View {
     private var volumeControl: some View {
         HStack(spacing: 0) {
             key("speaker.minus", label: "降低音量") { tv.volume(false) }
-                .frame(width: 94, height: 54)
-            Rectangle()
-                .fill(.white.opacity(0.2))
-                .frame(width: 1, height: 24)
-                .accessibilityHidden(true)
+                .frame(width: 72, height: 54)
+            Text(tv.currentVolume.map { String($0) } ?? "–")
+                .font(.subheadline.monospacedDigit())
+                .frame(width: 45)
+                .accessibilityLabel(tv.currentVolume.map { "当前音量 \($0)" } ?? "音量未知")
             key("speaker.plus", label: "提高音量") { tv.volume(true) }
-                .frame(width: 94, height: 54)
+                .frame(width: 72, height: 54)
         }
         .remoteGlass(in: Capsule())
     }

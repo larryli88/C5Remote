@@ -77,12 +77,14 @@ final class TVRemote: ObservableObject {
     @Published var address = UserDefaults.standard.string(forKey: "lastTV") ?? ""
     @Published private(set) var state = State.disconnected
     @Published private(set) var status = "输入电视的 IP 地址"
+    @Published private(set) var currentVolume: Int?
     @Published private(set) var commandError: String?
 
     private var session: URLSession?
     private var control: URLSessionWebSocketTask?
     private var pointer: URLSessionWebSocketTask?
     private var timeout: Task<Void, Never>?
+    private var receivingVolumeUpdates = false
     private var powerRequest: String?
     private var brightnessRequest: (id: String, expectedValue: Int?, key: String?)?
     private enum EnergyCheck {
@@ -189,6 +191,18 @@ final class TVRemote: ObservableObject {
                     let id = response["id"] as? String
                     let failed = response["type"] as? String == "error" || body?["returnValue"] as? Bool == false
                     let reason = response["error"] as? String ?? body?["errorText"] as? String ?? "电视拒绝了请求"
+                    if id == "volume-subscription" || id == "volume-reading" {
+                        if id == "volume-subscription" {
+                            self.receivingVolumeUpdates = !failed && self.updateVolume(from: body)
+                            if failed { self.request("audio/getVolume", id: "volume-reading") }
+                        } else if !failed, !self.receivingVolumeUpdates {
+                            _ = self.updateVolume(from: body)
+                        }
+                        continue
+                    }
+                    if let id, id.hasPrefix("volume-change-"), !failed, !self.receivingVolumeUpdates {
+                        self.request("audio/getVolume", id: "volume-reading")
+                    }
                     if let pending = self.energyRequest, pending.id == id {
                         let settings = body?["settings"] as? [String: Any]
                         let mode = failed ? nil : settings?["energySaving"] as? String
@@ -265,6 +279,7 @@ final class TVRemote: ObservableObject {
                         self.timeout?.cancel()
                         self.state = .ready
                         self.status = "已连接 · " + host
+                        self.request("audio/getVolume", id: "volume-subscription", type: "subscribe")
                     }
                     if let id, self.inputRequest == id {
                         let devices = body?["devices"] as? [[String: Any]] ?? []
@@ -312,6 +327,8 @@ final class TVRemote: ObservableObject {
         showingInputs = false
         inputs = []
         commandError = nil
+        currentVolume = nil
+        receivingVolumeUpdates = false
         state = .disconnected
         status = message
     }
@@ -336,7 +353,15 @@ final class TVRemote: ObservableObject {
     }
 
     func volume(_ up: Bool) {
-        request(up ? "audio/volumeUp" : "audio/volumeDown")
+        request(up ? "audio/volumeUp" : "audio/volumeDown", id: "volume-change-" + UUID().uuidString)
+    }
+
+    private func updateVolume(from payload: [String: Any]?) -> Bool {
+        let status = payload?["volumeStatus"] as? [String: Any]
+        guard let raw = status?["volume"] ?? payload?["volume"],
+              let value = Int(String(describing: raw)), (0...100).contains(value) else { return false }
+        currentVolume = value
+        return true
     }
 
     func powerOff() {
@@ -604,13 +629,13 @@ final class TVRemote: ObservableObject {
     }
 
     private func request(_ path: String, payload: [String: Any] = [:],
-                         id: String = UUID().uuidString, isPower: Bool = false) {
+                         id: String = UUID().uuidString, isPower: Bool = false, type: String = "request") {
         guard state == .ready, let socket = control else { return }
         commandError = nil
         if isPower { powerRequest = id }
         Task {
             do {
-                try await send(["id": id, "type": "request", "uri": "ssap://" + path, "payload": payload], to: socket)
+                try await send(["id": id, "type": type, "uri": "ssap://" + path, "payload": payload], to: socket)
             } catch {
                 guard control === socket else { return }
                 disconnect("连接断开 · " + error.localizedDescription)
