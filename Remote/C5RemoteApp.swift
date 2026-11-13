@@ -48,17 +48,16 @@ private struct RemoteView: View {
                     .overlay { connectionStatus }
 
                     if tv.state == .ready {
-                        trackpad.frame(height: max(185, geometry.size.height - 272))
-                        roundKey("chevron.left", label: "返回", size: 84, iconSize: 30) { tv.press("BACK") }
-                            .frame(maxWidth: .infinity)
-                            .overlay(alignment: .trailing) {
-                                roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
-                            }
-                        HStack(spacing: 16) {
-                            volumeControl
-                                .contextMenu { Button("断开连接") { disconnectManually() } }
-                            roundKey("gearshape", label: "设置", size: 54) { tv.openBrightness() }
+                        trackpad.frame(height: max(185, geometry.size.height - 288))
+                        HStack {
+                            roundKey("gearshape", label: "设置", size: 78, iconSize: 28) { tv.openBrightness() }
+                            Spacer(minLength: 0)
+                            roundKey("chevron.left", label: "返回", size: 100, iconSize: 36) { tv.press("BACK") }
+                            Spacer(minLength: 0)
+                            roundKey("tv", label: "主页", size: 78, iconSize: 28) { tv.press("HOME") }
                         }
+                        volumeControl
+                            .contextMenu { Button("断开连接") { disconnectManually() } }
 
                         if let error = tv.commandError {
                             Text(error)
