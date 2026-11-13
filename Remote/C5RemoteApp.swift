@@ -51,7 +51,6 @@ private struct RemoteView: View {
                         trackpad.frame(height: max(185, geometry.size.height - 288))
                         HStack {
                             roundKey("gearshape", label: "设置", size: 78, iconSize: 28) { tv.openBrightness() }
-                                .contextMenu { Button("断开连接") { disconnectManually() } }
                             Spacer(minLength: 0)
                             roundKey("chevron.left", label: "返回", size: 100, iconSize: 36) { tv.press("BACK") }
                             Spacer(minLength: 0)
@@ -170,6 +169,11 @@ private struct RemoteView: View {
                         }
                     } footer: {
                         Text("在电视的快速设置里选「所有设置 → 画面 → 高级设置 → 亮度 → OLED 像素亮度」。")
+                    }
+                    Section {
+                        Button("断开连接", role: .destructive) {
+                            disconnectManually()
+                        }
                     }
                 }
                 .navigationTitle("设置")
